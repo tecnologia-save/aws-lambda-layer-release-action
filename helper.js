@@ -1,5 +1,5 @@
 const { readFileSync, statSync } = require('fs');
-const { LambdaClient, PublishLayerVersionCommand, UpdateFunctionConfigurationCommand, ListFunctionsCommand } = require('@aws-sdk/client-lambda');
+const { LambdaClient, PublishLayerVersionCommand, UpdateFunctionConfigurationCommand, ListFunctionsCommand, GetFunctionConfigurationCommand } = require('@aws-sdk/client-lambda');
 const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 
 const non_error_response_codes = [200, 201, 204];
@@ -136,14 +136,31 @@ exports.refreshLambdaLayerVersion = async ({
 	layerARN,
 }) => {
 	const client = lambdaClient({ region, accessKeyId, secretAccessKey });
-	const commands = []
-	for (const functionName of functionNames)
-		commands.push(client.send(new UpdateFunctionConfigurationCommand({
-			FunctionName: functionName,
-			Layers: [layerARN]
-		})));
+	const commands = [];
+	const layerNameFromARN = layerARN.split(':').slice(-2, -1)[0]; 
+
+	for (const functionName of functionNames) {
+			try {
+				const currentConfig = await client.send(new GetFunctionConfigurationCommand({
+					FunctionName: functionName,
+				}));
+				const currentLayers = currentConfig.Layers || [];
+				const otherLayers = currentLayers.filter(layer => {
+					const currentLayerName = layer.Arn.split(':').slice(-2, -1)[0]; 
+					return currentLayerName != layerNameFromARN;
+				})
+				const updatedLayers = [...otherLayers, { Arn: layerARN }];
+
+				commands.push(client.send(new UpdateFunctionConfigurationCommand({
+					FunctionName: functionName,
+					Layers: updatedLayers.map(layer => layer.Arn),
+				})));
+		}catch (error) {
+			console.error(`Erro ao atualizar a função ${functionName}:`, error);
+		}
+	}
 	const response = await Promise.all(commands);
-	return response;
+	return response; 
 }
 
 /**
